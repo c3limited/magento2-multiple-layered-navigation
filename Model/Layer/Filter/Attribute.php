@@ -8,14 +8,19 @@ use Magento\CatalogSearch\Model\Layer\Filter\Attribute as CoreAttribute;
 class Attribute extends CoreAttribute
 {
     /**
-     * @var \Magento\Framework\App\RequestInterface
-     */
-    protected $_request;
-
-    /**
      * @var \Magento\Framework\Filter\StripTags
      */
-    protected $tagFilter;
+    private $tagFilter;
+
+    /**
+     * @var \\Niks\LayeredNavigation\Model\Url\Builder
+     */
+    protected $urlBuilder;
+
+    /**
+     * @var \Magento\CatalogSearch\Model\Layer\Category\ItemCollectionProvider
+     */
+    protected $collectionProvider;
 
     /**
      * @param \Magento\Catalog\Model\Layer\Filter\ItemFactory $filterItemFactory
@@ -31,6 +36,8 @@ class Attribute extends CoreAttribute
         \Magento\Catalog\Model\Layer $layer,
         \Magento\Catalog\Model\Layer\Filter\Item\DataBuilder $itemDataBuilder,
         \Magento\Framework\Filter\StripTags $tagFilter,
+        \Niks\LayeredNavigation\Model\Url\Builder $urlBuilder,
+        \Niks\LayeredNavigation\Model\Layer\ItemCollectionProvider $collectionProvider,
         array $data = []
     ) {
         parent::__construct(
@@ -42,14 +49,8 @@ class Attribute extends CoreAttribute
             $data
         );
         $this->tagFilter = $tagFilter;
-    }
-
-    /**
-     * @return \Magento\Framework\App\RequestInterface
-     */
-    protected function _getRequest()
-    {
-        return $this->_request;
+        $this->urlBuilder = $urlBuilder;
+        $this->collectionProvider = $collectionProvider;
     }
 
     /**
@@ -61,8 +62,8 @@ class Attribute extends CoreAttribute
      */
     public function apply(\Magento\Framework\App\RequestInterface $request)
     {
-        $this->_request = $request;
-        if (empty($request->getParam($this->_requestVar))) {
+        $values = $this->urlBuilder->getValuesFromUrl($this->_requestVar);
+        if (!$values) {
             return $this;
         }
 
@@ -71,29 +72,13 @@ class Attribute extends CoreAttribute
             ->getProductCollection();
         $this->applyToCollection($productCollection);
 
-        $attributeValues = $this->getValueAsArray();
-        foreach ($attributeValues as $value) {
+        foreach ($values as $value) {
             $label = $this->getOptionText($value);
             $this->getLayer()
                 ->getState()
                 ->addFilter($this->_createItem($label, $value));
         }
         return $this;
-    }
-
-    /**
-     * Get filter values
-     *
-     * @return array
-     */
-    public function getValueAsArray()
-    {
-        $paramValue = $this->_getRequest()->getParam($this->_requestVar);
-        if (!$paramValue) {
-            return array();
-        }
-        $requestValue = $this->_getRequest()->getParam($this->_requestVar);
-        return explode('_', $requestValue);
     }
 
     /**
@@ -104,27 +89,12 @@ class Attribute extends CoreAttribute
     public function applyToCollection($collection)
     {
         $attribute = $this->getAttributeModel();
-        $attributeValue = $this->getValueAsArray();
+        $attributeValue = $this->urlBuilder->getValuesFromUrl($this->_requestVar);
         if (empty($attributeValue)) {
             return $this;
         }
         $collection->addFieldToFilter($attribute->getAttributeCode(), array('in' => $attributeValue));
     }
-
-    /**
-     * Get filter value for reset current filter state
-     *
-     * @param string $value
-     * @return string
-     */
-    public function getResetOptionValue($value)
-    {
-        $attributeValues = $this->getValueAsArray();
-        $key = array_search($value, $attributeValues);
-        unset($attributeValues[$key]);
-        return implode('_', $attributeValues);
-    }
-
 
     /**
      * Get data array for building attribute filter items
@@ -134,7 +104,8 @@ class Attribute extends CoreAttribute
      */
     protected function _getItemsData()
     {
-        if (!$this->_getRequest()->getParam($this->_requestVar)) {
+        $values = $this->urlBuilder->getValuesFromUrl($this->_requestVar);
+        if (!$values) {
             return parent::_getItemsData();
         }
 
@@ -143,8 +114,9 @@ class Attribute extends CoreAttribute
             ->getProductCollection();
 
         /** @var \Niks\LayeredNavigation\Model\ResourceModel\Fulltext\Collection $collection */
-        $collection = $this->getLayer()->getCollectionProvider()->getCollection($this->getLayer()->getCurrentCategory());
-
+        $collection = $this->collectionProvider->getCollection($this->getLayer()->getCurrentCategory());
+        $collection->updateSearchCriteriaBuilder();
+        $this->getLayer()->prepareProductCollection($collection);
         foreach ($productCollection->getAddedFilters() as $field => $condition) {
             if ($this->getAttributeModel()->getAttributeCode() == $field) {
                 continue;
@@ -153,6 +125,7 @@ class Attribute extends CoreAttribute
         }
 
         $attribute = $this->getAttributeModel();
+
         $optionsFacetedData = $collection->getFacetedData($attribute->getAttributeCode());
 
         if ($attribute->getFrontendInput() == 'multiselect') {
@@ -167,9 +140,9 @@ class Attribute extends CoreAttribute
 
         $options = $attribute->getFrontend()
             ->getSelectOptions();
-        $usedOptions = $this->getValueAsArray();
+
         foreach ($options as $option) {
-            if (empty($option['value']) || in_array($option['value'], $usedOptions)) {
+            if (empty($option['value']) || in_array($option['value'], $values)) {
                 continue;
             }
             // Check filter type

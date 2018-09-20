@@ -7,15 +7,22 @@ use Magento\CatalogSearch\Model\Layer\Filter\Price as CorePrice;
  */
 class Price extends CorePrice
 {
-    /**
-     * @var \Magento\Framework\App\RequestInterface
-     */
-    protected $_request;
+    use SliderTrait;
 
     /**
      * @var \Magento\Catalog\Model\Layer\Filter\DataProvider\Price
      */
     private $dataProvider;
+
+    /**
+     * @var \\Niks\LayeredNavigation\Model\Url\Builder
+     */
+    protected $urlBuilder;
+
+    /**
+     * @var \Magento\CatalogSearch\Model\Layer\Category\ItemCollectionProvider
+     */
+    protected $collectionProvider;
 
     /**
      * @param \Magento\Catalog\Model\Layer\Filter\ItemFactory $filterItemFactory
@@ -43,6 +50,8 @@ class Price extends CorePrice
         \Magento\Framework\Pricing\PriceCurrencyInterface $priceCurrency,
         \Magento\Catalog\Model\Layer\Filter\Dynamic\AlgorithmFactory $algorithmFactory,
         \Magento\Catalog\Model\Layer\Filter\DataProvider\PriceFactory $dataProviderFactory,
+        \Niks\LayeredNavigation\Model\Url\Builder $urlBuilder,
+        \Niks\LayeredNavigation\Model\Layer\ItemCollectionProvider $collectionProvider,
         array $data = []
     ) {
 
@@ -60,26 +69,8 @@ class Price extends CorePrice
             $data
         );
         $this->dataProvider = $dataProviderFactory->create(['layer' => $this->getLayer()]);
-    }
-
-    /**
-     * @return \Magento\Framework\App\RequestInterface
-     */
-    protected function _getRequest()
-    {
-        return $this->_request;
-    }
-
-    /**
-     * Apply category filter to product collection
-     *
-     * @param   \Magento\Framework\App\RequestInterface $request
-     * @return  $this
-     */
-    public function apply(\Magento\Framework\App\RequestInterface $request)
-    {
-        $this->_request = $request;
-        return parent::apply($request);
+        $this->urlBuilder = $urlBuilder;
+        $this->collectionProvider = $collectionProvider;
     }
 
     /**
@@ -87,24 +78,26 @@ class Price extends CorePrice
      *
      * @return Attribute
      */
-    public function applyToCollection($collection)
+    public function applyToCollection($collection, $addFilter = false)
     {
-        $request = $this->_getRequest();
-        $filter = $request->getParam($this->getRequestVar());
-        if (!$filter || is_array($filter)) {
-            return $this;
+        $values = $this->urlBuilder->getValuesFromUrl($this->_requestVar);
+        $filter = false;
+        if ($values) {
+            $filter = $values[0];
         }
 
         $filterParams = explode(',', $filter);
-        $filter = $this->dataProvider->validateFilter($filterParams[0]);
+        $filter = $this->getCurrentValue();
         if (!$filter) {
             return $this;
         }
 
-        $this->dataProvider->setInterval($filter);
-        $priorFilters = $this->dataProvider->getPriorFilters($filterParams);
-        if ($priorFilters) {
-            $this->dataProvider->setPriorIntervals($priorFilters);
+        if ($addFilter) {
+            $this->dataProvider->setInterval($filter);
+            $priorFilters = $this->dataProvider->getPriorFilters($filterParams);
+            if ($priorFilters) {
+                $this->dataProvider->setPriorIntervals($priorFilters);
+            }
         }
 
         list($from, $to) = $filter;
@@ -114,6 +107,75 @@ class Price extends CorePrice
             ['from' => $from, 'to' =>  empty($to) || $from == $to ? $to : $to - self::PRICE_DELTA]
         );
 
+        if ($addFilter) {
+            $this->getLayer()->getState()->addFilter(
+                $this->_createItem($this->_renderRangeLabel(empty($from) ? 0 : $from, $to), $filter)
+            );
+        }
         return $this;
+    }
+
+    /**
+     * Get applied values
+     *
+     * @return array|bool
+     */
+    public function getCurrentValue()
+    {
+        $values = $this->urlBuilder->getValuesFromUrl($this->_requestVar);
+        $filter = false;
+        if ($values) {
+            $filter = $values[0];
+        }
+        $filterParams = explode(',', $filter);
+        return $this->dataProvider->validateFilter($filterParams[0]);
+    }
+
+    /**
+     * Get max value
+     *
+     * @return float
+     */
+    public function getMax()
+    {
+        return $this->getCollectionWithoutFilter()->getMaxPrice();
+    }
+
+    /**
+     * Get min value
+     *
+     * @return float
+     */
+    public function getMin()
+    {
+        return $this->getCollectionWithoutFilter()->getMinPrice();
+    }
+
+    /**
+     * @param float $from
+     * @return float
+     */
+    protected function getTo($from)
+    {
+        $to = '';
+        $interval = $this->dataProvider->getInterval();
+        if ($interval && is_numeric($interval[1]) && $interval[1] > $from) {
+            $to = $interval[1];
+        }
+        return $to;
+    }
+
+    /**
+     * @param float $from
+     * @return float
+     */
+    protected function getFrom($from)
+    {
+        $to = '';
+        $interval = $this->dataProvider->getInterval();
+        if ($interval && is_numeric($interval[0]) && $interval[0] < $from) {
+            $to = $interval[0];
+        }
+        return $to;
     }
 }

@@ -1,6 +1,7 @@
 <?php
 namespace Niks\LayeredNavigation\Model\Layer\Filter;
 use Magento\CatalogSearch\Model\Layer\Filter\Category as CoreCategory;
+use Magento\Framework\App\ObjectManager;
 
 /**
  * Layer attribute filter
@@ -8,14 +9,24 @@ use Magento\CatalogSearch\Model\Layer\Filter\Category as CoreCategory;
 class Category extends CoreCategory
 {
     /**
-     * @var \Magento\Framework\App\RequestInterface
+     * @var \Magento\Framework\Escaper
      */
-    protected $_request;
+    private $escaper;
 
     /**
      * @var CategoryDataProvider
      */
     private $dataProvider;
+
+    /**
+     * @var \\Niks\LayeredNavigation\Model\Url\Builder
+     */
+    protected $urlBuilder;
+
+    /**
+     * @var \Magento\CatalogSearch\Model\Layer\Category\ItemCollectionProvider
+     */
+    protected $collectionProvider;
 
     /**
      * @param \Magento\Catalog\Model\Layer\Filter\ItemFactory $filterItemFactory
@@ -34,8 +45,11 @@ class Category extends CoreCategory
         \Magento\Catalog\Model\Layer\Filter\Item\DataBuilder $itemDataBuilder,
         \Magento\Framework\Escaper $escaper,
         \Magento\Catalog\Model\Layer\Filter\DataProvider\CategoryFactory $categoryDataProviderFactory,
+        \Niks\LayeredNavigation\Model\Url\Builder $urlBuilder,
+        \Niks\LayeredNavigation\Model\Layer\ItemCollectionProvider $collectionProvider,
         array $data = []
-    ) {
+    )
+    {
         parent::__construct(
             $filterItemFactory,
             $storeManager,
@@ -45,15 +59,10 @@ class Category extends CoreCategory
             $categoryDataProviderFactory,
             $data
         );
+        $this->escaper = $escaper;
         $this->dataProvider = $categoryDataProviderFactory->create(['layer' => $this->getLayer()]);
-    }
-
-    /**
-     * @return \Magento\Framework\App\RequestInterface
-     */
-    protected function _getRequest()
-    {
-        return $this->_request;
+        $this->urlBuilder = $urlBuilder;
+        $this->collectionProvider = $collectionProvider;
     }
 
     /**
@@ -64,25 +73,95 @@ class Category extends CoreCategory
      */
     public function apply(\Magento\Framework\App\RequestInterface $request)
     {
-        $this->_request = $request;
-        return parent::apply($request);
+        $values = $this->urlBuilder->getValuesFromUrl($this->_requestVar);
+        if (!$values) {
+            return $this;
+        }
+
+        /** @var \Magento\CatalogSearch\Model\ResourceModel\Fulltext\Collection $productCollection */
+        $productCollection = $this->getLayer()
+            ->getProductCollection();
+        $this->applyToCollection($productCollection);
+
+        /** @var \Magento\Catalog\Model\ResourceModel\Category\Collection $categoryCollection */
+        $categoryCollection = ObjectManager::getInstance()
+            ->create(\Magento\Catalog\Model\ResourceModel\Category\Collection::class);
+        $categoryCollection->addAttributeToFilter('entity_id', ['in' => $values])->addAttributeToSelect('name');
+        $categoryItems = $categoryCollection->getItems();
+
+        foreach ($values as $value) {
+            if (isset($categoryItems[$value])) {
+                $category = $categoryItems[$value];
+                $label = $category->getName();
+                $this->getLayer()
+                    ->getState()
+                    ->addFilter($this->_createItem($label, $value));
+            }
+        }
+        return $this;
+    }
+
+    /**
+     * Get data array for building category filter items
+     *
+     * @return array
+     */
+    protected function _getItemsData()
+    {
+        $values = $this->urlBuilder->getValuesFromUrl($this->_requestVar);
+        if (!$values) {
+            return parent::_getItemsData();
+        }
+
+        /** @var \Niks\LayeredNavigation\Model\ResourceModel\Fulltext\Collection $productCollection */
+        $productCollection = $this->getLayer()->getProductCollection();
+
+        /** @var \Niks\LayeredNavigation\Model\ResourceModel\Fulltext\Collection $collection */
+        $collection = $this->collectionProvider->getCollection($this->getLayer()->getCurrentCategory());
+        $collection->updateSearchCriteriaBuilder();
+        $this->getLayer()->prepareProductCollection($collection);
+        foreach ($productCollection->getAddedFilters() as $field => $condition) {
+            if ($field === 'category_ids') {
+                $collection->addFieldToFilter($field, $this->getLayer()->getCurrentCategory()->getId());
+                continue;
+            }
+            $collection->addFieldToFilter($field, $condition);
+        }
+
+        $optionsFacetedData = $collection->getFacetedData('category');
+        $category = $this->dataProvider->getCategory();
+        $categories = $category->getChildrenCategories();
+
+        if ($category->getIsActive()) {
+            foreach ($categories as $category) {
+                if ($category->getIsActive()
+                    && isset($optionsFacetedData[$category->getId()])
+                    && !in_array($category->getId(), $values)
+                ) {
+                    $this->itemDataBuilder->addItemData(
+                        $this->escaper->escapeHtml($category->getName()),
+                        $category->getId(),
+                        isset($optionsFacetedData[$category->getId()]['count']) ? '+' . $optionsFacetedData[$category->getId()]['count'] : 0
+                    );
+                }
+            }
+        }
+        return $this->itemDataBuilder->build();
     }
 
     /**
      * Apply current filter to collection
      *
+     * @param \Magento\CatalogSearch\Model\ResourceModel\Fulltext\Collection $collection
      * @return $this
      */
     public function applyToCollection($collection)
     {
-        $request = $this->_getRequest();
-        $categoryId = $request->getParam($this->_requestVar) ?: $request->getParam('id');
-        if (empty($categoryId)) {
+        $values = $this->urlBuilder->getValuesFromUrl($this->_requestVar);
+        if (empty($values)) {
             return $this;
         }
-        $this->dataProvider->setCategoryId($categoryId);
-        $category = $this->dataProvider->getCategory();
-        $collection->addCategoryFilter($category);
+        $collection->addCategoriesFilter(['in' => $values]);
         return $this;
     }
 }
